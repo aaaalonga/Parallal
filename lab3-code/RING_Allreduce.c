@@ -27,41 +27,82 @@ void Print(float *array, int n)
 void RING_Allreduce(float *res, int n, MPI_Datatype datatype, MPI_Op op, MPI_Comm comm)
 {
     int batch_size = n / number_of_processes + (n % number_of_processes != 0 ? 1 : 0);
-    int send_id = rank;
-    int recv_id = (rank - 1 + number_of_processes) % number_of_processes;
+    int send_id = rank;    // 当前进程发送的数据块的标识，向哪个进程发送数据
+    int recv_id = (rank - 1 + number_of_processes) % number_of_processes;     // 当前进程接收的数据块的标识，收到来自哪个进程的数据
     float *buff = (float *)malloc(sizeof(float) * batch_size);
+    int *counts = (int *)malloc(sizeof(int) * number_of_processes);      // 每个进程的元素数量
+    int *displs = (int *)malloc(sizeof(int) * number_of_processes);      // 每个进程的起始索引
     MPI_Status status;
     MPI_Request request;
 
+    for (int i = 0; i < number_of_processes; i ++)
+    {
+        int start_index = i * batch_size;
+        if (start_index >= n)
+        {
+            counts[i] = 0;
+        }
+        else if (start_index + batch_size <= n)
+        {
+            counts[i] = batch_size;
+        }
+        else
+        {
+            counts[i] = n - start_index;
+        }
+        displs[i] = start_index;
+    }
+
     for (int i = 0; i < number_of_processes - 1; i ++)
     {
-        MPI_Isend(res + batch_size * send_id, batch_size, datatype, (rank + 1) % number_of_processes, 0, comm, &request);
-        MPI_Recv(buff, batch_size, datatype, (rank - 1 + number_of_processes) % number_of_processes, 0, comm, &status);
+        int send_count = counts[send_id];
+        int recv_count = counts[recv_id];
+        // MPI_Isend(res + batch_size * send_id, batch_size, datatype, (rank + 1) % number_of_processes, 0, comm, &request);
+        MPI_Isend(res + displs[send_id], send_count, datatype, (rank + 1) % number_of_processes, 0, comm, &request);
+        // MPI_Recv(buff, batch_size, datatype, (rank - 1 + number_of_processes) % number_of_processes, 0, comm, &status);
+        MPI_Recv(buff, recv_count, datatype, (rank - 1 + number_of_processes) % number_of_processes, 0, comm, &status);
         MPI_Wait(&request, &status);
-        for (int j = 0; j < batch_size; j ++)
+
+        // for (int j = 0; j < batch_size; j ++)
+        // {
+        //     int res_id = recv_id * batch_size + j;
+        //     if (op == MPI_SUM)
+        //     {
+        //         res[res_id] += buff[j]; 
+        //     }
+        //     else if (op == MPI_MAX)
+        //     {
+        //         res[res_id] = buff[j] > res[res_id] ? buff[j] : res[res_id];
+        //     }
+        // }
+        for (int j = 0; j < recv_count; j++)
         {
-            int res_id = recv_id * batch_size + j;
+            int res_id = displs[recv_id] + j;
             if (op == MPI_SUM)
             {
-                res[res_id] += buff[j]; 
+                res[res_id] += buff[j];
             }
             else if (op == MPI_MAX)
             {
-                res[res_id] = buff[j] > res[res_id] ? buff[j] : res[res_id];
+                res[res_id] = (buff[j] > res[res_id]) ? buff[j] : res[res_id];
             }
         }
+
         send_id = recv_id;
         recv_id = (recv_id - 1 + number_of_processes) % number_of_processes;
     }
     for (int step = 0; step < number_of_processes - 1; step++){
+        int send_count = counts[send_id];
+        int recv_count = counts[recv_id];
         float *send_buff = res + send_id * batch_size;
         // use isend to avoid deadlock
-        MPI_Isend(send_buff, batch_size, datatype, (rank + 1) % number_of_processes, 0, comm, &request);
-        MPI_Recv(buff, batch_size, datatype, (rank - 1 + number_of_processes) % number_of_processes, 0, comm, &status);
+        MPI_Isend(send_buff, send_count, datatype, (rank + 1) % number_of_processes, 0, comm, &request);
+        MPI_Recv(buff, recv_count, datatype, (rank - 1 + number_of_processes) % number_of_processes, 0, comm, &status);
         MPI_Wait(&request, &status);
 
-        for (int i = 0; i < batch_size; i++){
+        for (int i = 0; i < recv_count; i++){
             int res_id = recv_id * batch_size + i;
+            //int res_id = displs[recv_id] + i;
             res[res_id] = buff[i];
         }
 
@@ -69,6 +110,8 @@ void RING_Allreduce(float *res, int n, MPI_Datatype datatype, MPI_Op op, MPI_Com
         recv_id = (recv_id - 1 + number_of_processes) % number_of_processes;
     }
     free(buff);
+    free(counts);
+    free(displs);
 }
 
 
@@ -90,7 +133,7 @@ int main(int argc, char *argv[])
     res1 = (float *)malloc(n * sizeof(float));
     res2 = (float *)malloc(n * sizeof(float));
     Init(array, n);
-    Print(array, n);
+    // Print(array, n);
     MPI_Barrier(MPI_COMM_WORLD);
 
     // MPI_Allreduce
@@ -109,7 +152,7 @@ int main(int argc, char *argv[])
     }
     MPI_Barrier(MPI_COMM_WORLD);
     end_time = MPI_Wtime();
-    Print(res1, n);
+    // Print(res1, n);
     // printf("process %d MPI_Allreduce time: %.2lf ms\n", rank, (end_time - start_time * 1000));
     if (rank == 0)
     {
@@ -137,7 +180,7 @@ int main(int argc, char *argv[])
     }
     MPI_Barrier(MPI_COMM_WORLD);
     end_time = MPI_Wtime();
-    Print(res2, n);
+    // Print(res2, n);
     if (rank == 0)
     {
         printf("RING_Allreduce time: %.2lf ms\n", (end_time - start_time) * 1000);
